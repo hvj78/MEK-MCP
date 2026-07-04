@@ -39,12 +39,33 @@ from mek_mcp_server import SearchCondition, FIELD_NAMES, mcp
 API_VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
-# Remote MCP (streamable HTTP) mounted under /mcp
+# Remote MCP (streamable HTTP) served at /mcp
 # ---------------------------------------------------------------------------
+
+from mcp.server.transport_security import TransportSecuritySettings
+
+# The MCP SDK's DNS-rebinding protection validates the Host header and is
+# designed for LOCAL servers (it only allows localhost by default, so a
+# hosted deployment would answer 421 Misdirected Request). For a public
+# host either list the allowed hostnames in MEK_MCP_ALLOWED_HOSTS
+# (comma-separated, e.g. "mek-mcp.fly.dev") or leave it unset to disable
+# the check entirely — appropriate for a TLS-terminated public service.
+_allowed_hosts = [
+    h.strip()
+    for h in os.environ.get("MEK_MCP_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+]
+mcp.settings.transport_security = (
+    TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=_allowed_hosts
+    )
+    if _allowed_hosts
+    else TransportSecuritySettings(enable_dns_rebinding_protection=False)
+)
 
 mcp.settings.stateless_http = True   # no per-session state -> Fly-friendly
 mcp.settings.json_response = True
-mcp.settings.streamable_http_path = "/"  # mounted below at /mcp
+mcp.settings.streamable_http_path = "/mcp"  # served directly, no redirect
 
 mcp_asgi = mcp.streamable_http_app()
 
@@ -65,7 +86,6 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-app.mount("/mcp", mcp_asgi)
 
 # ---------------------------------------------------------------------------
 # Optional API-key auth (set MEK_API_KEY as a Fly secret to enable)
@@ -188,3 +208,8 @@ async def get_record(mek_id: str) -> dict[str, Any]:
 @app.get("/v1/fields", summary="List of searchable advanced-search fields")
 async def fields() -> dict[str, Any]:
     return {"fields": FIELD_NAMES}
+
+
+# Mounted last so every FastAPI route above takes precedence; the MCP
+# sub-app serves POST/GET /mcp directly (no trailing-slash redirect).
+app.mount("/", mcp_asgi)
