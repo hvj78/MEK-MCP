@@ -1,24 +1,28 @@
-# fly.toml — MEK Search API
-app = "mek-search-api"          # globálisan egyedinek kell lennie; deploykor felülírható
-primary_region = "ams"          # Amszterdam — Magyarországhoz közeli régió
+# fly.toml app configuration file generated for mek-mcp on 2026-07-04T07:02:12Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'mek-mcp'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"   # tétlen gép leáll -> gyakorlatilag ingyenes üresjárat
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/healthz"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/healthz'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
