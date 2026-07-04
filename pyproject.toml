@@ -1,0 +1,23 @@
+[project]
+name = "mek-mcp"
+version = "1.0.0"
+description = "MCP server + FastAPI microservice for the Hungarian Electronic Library (MEK, mek.oszk.hu)"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.scripts]
+mek-mcp = "mek_mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = ["mek_mcp_server.py", "app.py"]
