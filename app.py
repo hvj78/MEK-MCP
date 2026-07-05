@@ -1,21 +1,31 @@
 """
-MEK Search API — FastAPI microservice around the MEK MCP server.
+MEK + OSZKDK Search API — FastAPI microservice around two Hungarian
+digital-library MCP servers.
 
-Exposes the Hungarian Electronic Library (mek.oszk.hu) searches two ways:
+Exposes both the Hungarian Electronic Library (MEK, mek.oszk.hu) and the
+OSZK Digitális Könyvtár (OSZKDK, oszkdk.oszk.hu) searches two ways:
 
 1. REST API (this file):
-     GET  /v1/search/simple      – simple search (title/subject/author/id)
-     POST /v1/search/advanced    – fielded search, AND/OR/NOT, 24 fields
-     GET  /v1/search/fulltext    – free-text search in document bodies
-     GET  /v1/browse             – controlled-vocabulary index browsing
-     GET  /v1/records/{mek_id}   – single record metadata
-     GET  /healthz               – liveness probe
+     GET  /v1/search/simple            – MEK simple search
+     POST /v1/search/advanced          – MEK fielded search, AND/OR/NOT, 24 fields
+     GET  /v1/search/fulltext          – MEK free-text search in document bodies
+     GET  /v1/browse                   – MEK controlled-vocabulary index browsing
+     GET  /v1/records/{mek_id}         – MEK single record metadata
+     GET  /v1/fields                   – MEK advanced-search field list
+     GET  /v1/oszkdk/search/simple     – OSZKDK simple search
+     POST /v1/oszkdk/search/advanced   – OSZKDK fielded search, AND/OR/NOT
+     GET  /v1/oszkdk/records/{id}      – OSZKDK single record metadata + files
+     GET  /v1/oszkdk/top               – OSZKDK most-read titles
+     GET  /healthz                     – liveness probe
    Interactive docs at /docs (OpenAPI at /openapi.json).
 
-2. Remote MCP endpoint (streamable HTTP) at /mcp — the same five tools the
-   stdio server offers, usable from Claude Code / claude.ai without any
-   local install:
-     claude mcp add --transport http mek https://<app>.fly.dev/mcp
+2. Remote MCP endpoint (streamable HTTP) at /mcp — all nine tools from both
+   libraries in one place (mek_* and oszkdk_* prefixes avoid name clashes),
+   usable from Claude Code / claude.ai without any local install:
+     claude mcp add --transport http mek-oszkdk https://<app>.fly.dev/mcp
+
+   Each library's stdio server also still runs standalone if only one is
+   wanted locally: `python mek_mcp_server.py` / `python oszkdk_mcp_server.py`.
 
 Optional auth: set the MEK_API_KEY environment variable (Fly secret) and
 every request except /, /healthz, /docs, /openapi.json must carry it in an
@@ -32,17 +42,45 @@ from typing import Any, Literal, Optional
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 import mek_mcp_server as core
-from mek_mcp_server import SearchCondition, FIELD_NAMES, mcp
+from mek_mcp_server import SearchCondition, FIELD_NAMES
 
-API_VERSION = "1.0.0"
+import oszkdk_mcp_server as oszkdk_core
+from oszkdk_mcp_server import SearchCondition as OszkdkSearchCondition
+
+API_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
-# Remote MCP (streamable HTTP) served at /mcp
+# Remote MCP (streamable HTTP) served at /mcp — combines both libraries'
+# tools into a single server so an agent only needs one connector.
 # ---------------------------------------------------------------------------
 
-from mcp.server.transport_security import TransportSecuritySettings
+combined_mcp = FastMCP(
+    "mek-oszkdk-search",
+    instructions=(
+        "Search tools for two independent Hungarian digital libraries:\n"
+        "- mek_* tools: Magyar Elektronikus Könyvtár (MEK, mek.oszk.hu) — "
+        "older/classic Hungarian literature, textbooks and grey literature.\n"
+        "- oszkdk_* tools: OSZK Digitális Könyvtár (OSZKDK, oszkdk.oszk.hu) — "
+        "skews toward ISBN-registered modern books and monographs.\n"
+        "The two collections only partially overlap: if one returns nothing "
+        "useful for a modern/ISBN-bearing Hungarian book, try the other. "
+        "See each tool's own description for field/search details."
+    ),
+)
+for _name in (
+    "mek_simple_search", "mek_advanced_search", "mek_fulltext_search",
+    "mek_browse_index", "mek_get_record",
+):
+    combined_mcp.add_tool(getattr(core, _name))
+for _name in (
+    "oszkdk_simple_search", "oszkdk_advanced_search",
+    "oszkdk_get_record", "oszkdk_top_list",
+):
+    combined_mcp.add_tool(getattr(oszkdk_core, _name))
 
 # The MCP SDK's DNS-rebinding protection validates the Host header and is
 # designed for LOCAL servers (it only allows localhost by default, so a
@@ -55,7 +93,7 @@ _allowed_hosts = [
     for h in os.environ.get("MEK_MCP_ALLOWED_HOSTS", "").split(",")
     if h.strip()
 ]
-mcp.settings.transport_security = (
+combined_mcp.settings.transport_security = (
     TransportSecuritySettings(
         enable_dns_rebinding_protection=True, allowed_hosts=_allowed_hosts
     )
@@ -63,26 +101,27 @@ mcp.settings.transport_security = (
     else TransportSecuritySettings(enable_dns_rebinding_protection=False)
 )
 
-mcp.settings.stateless_http = True   # no per-session state -> Fly-friendly
-mcp.settings.json_response = True
-mcp.settings.streamable_http_path = "/mcp"  # served directly, no redirect
+combined_mcp.settings.stateless_http = True  # no per-session state -> Fly-friendly
+combined_mcp.settings.json_response = True
+combined_mcp.settings.streamable_http_path = "/mcp"  # served directly, no redirect
 
-mcp_asgi = mcp.streamable_http_app()
+mcp_asgi = combined_mcp.streamable_http_app()
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
-    async with mcp.session_manager.run():
+    async with combined_mcp.session_manager.run():
         yield
 
 
 app = FastAPI(
-    title="MEK Search API",
+    title="MEK + OSZKDK Search API",
     version=API_VERSION,
     description=(
-        "REST + remote-MCP gateway to the search interfaces of the "
-        "Hungarian Electronic Library (Magyar Elektronikus Könyvtár, "
-        "https://mek.oszk.hu)."
+        "REST + remote-MCP gateway to the search interfaces of two "
+        "Hungarian digital libraries: the Hungarian Electronic Library "
+        "(Magyar Elektronikus Könyvtár, https://mek.oszk.hu) and the "
+        "OSZK Digitális Könyvtár (https://oszkdk.oszk.hu)."
     ),
     lifespan=lifespan,
 )
@@ -117,11 +156,14 @@ async def api_key_middleware(request: Request, call_next):
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, Any]:
     return {
-        "service": "MEK Search API",
+        "service": "MEK + OSZKDK Search API",
         "version": API_VERSION,
         "docs": "/docs",
         "mcp_endpoint": "/mcp",
-        "source_library": "https://mek.oszk.hu",
+        "source_libraries": {
+            "MEK": "https://mek.oszk.hu",
+            "OSZKDK": "https://oszkdk.oszk.hu",
+        },
     }
 
 
@@ -205,9 +247,58 @@ async def get_record(mek_id: str) -> dict[str, Any]:
         raise HTTPException(404, f"Record not found: {exc}") from exc
 
 
-@app.get("/v1/fields", summary="List of searchable advanced-search fields")
+@app.get("/v1/fields", summary="List of searchable MEK advanced-search fields")
 async def fields() -> dict[str, Any]:
     return {"fields": FIELD_NAMES}
+
+
+# ---------------------------------------------------------------------------
+# OSZKDK REST endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/oszkdk/search/simple", summary="OSZKDK simple keyword search")
+async def oszkdk_search_simple(
+    q: str = Query(..., min_length=1, description="Free-text query (Hungarian)"),
+    offset: int = Query(0, ge=0, description="0-based offset; page size fixed at 10"),
+) -> dict[str, Any]:
+    return await oszkdk_core.oszkdk_simple_search(query=q, offset=offset)
+
+
+class OszkdkAdvancedSearchRequest(BaseModel):
+    conditions: list[OszkdkSearchCondition] = Field(
+        min_length=1, max_length=3,
+        description="1-3 conditions; each links to the previous with "
+                    "operator and/or/not. Fields: title, author, any_field.",
+    )
+    document_type: Literal["all", "books", "images"] = "all"
+    offset: int = Field(0, ge=0)
+
+
+@app.post("/v1/oszkdk/search/advanced", summary="OSZKDK advanced fielded search (AND/OR/NOT)")
+async def oszkdk_search_advanced(req: OszkdkAdvancedSearchRequest) -> dict[str, Any]:
+    try:
+        return await oszkdk_core.oszkdk_advanced_search(
+            conditions=req.conditions,
+            document_type=req.document_type,
+            offset=req.offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/oszkdk/records/{record_id}", summary="Metadata of a single OSZKDK record")
+async def oszkdk_get_record_endpoint(record_id: str) -> dict[str, Any]:
+    try:
+        return await oszkdk_core.oszkdk_get_record(record_id_or_url=record_id)
+    except Exception as exc:  # noqa: BLE001 — upstream 404 etc.
+        raise HTTPException(404, f"Record not found: {exc}") from exc
+
+
+@app.get("/v1/oszkdk/top", summary="OSZKDK most-read titles (month/year/all-time)")
+async def oszkdk_top(
+    period: Literal["month", "year", "alltime"] = "month",
+) -> dict[str, Any]:
+    return await oszkdk_core.oszkdk_top_list(period=period)
 
 
 # Mounted last so every FastAPI route above takes precedence; the MCP

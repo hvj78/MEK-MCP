@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY mek_mcp_server.py app.py ./
+COPY mek_mcp_server.py oszkdk_mcp_server.py app.py ./
 
 EXPOSE 8080
 
